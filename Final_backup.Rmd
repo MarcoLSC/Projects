@@ -1,0 +1,1005 @@
+---
+title: "Time series analysis: Final Assignment"
+author: "Lesci, Malerba, Montagna"
+date: "June 5, 2020"
+output: pdf_document
+geometry: margin=0.5in 
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, fig.align = "center", warning = FALSE, message=FALSE)
+```
+
+\setlength{\abovedisplayskip}{-10pt}
+\setlength{\belowdisplayskip}{0pt}
+\setlength{\abovedisplayshortskip}{0pt}
+\setlength{\belowdisplayshortskip}{0pt}
+
+
+
+```{r, include=FALSE}
+library(magrittr)
+library(latex2exp)
+library(ggthemes)
+library(knitr)
+library(kableExtra)
+library(tseries)
+library(dlm)
+library(forecast)
+library(gridExtra)
+library(depmixS4)
+library(tidyverse)
+library(readr)
+library(MLmetrics)
+library(ggpubr)
+library(ggsci)
+library(ggResidpanel)
+library(matrixStats)
+```
+
+
+# Aim of the study
+
+The aim of our analysis is to better understand what drives the evolution of the heart rate during a bike ride. We employed a dataset composed of 45 tracks, all run by the same individual, that record \texttt{bpm}, \texttt{speed} and \texttt{elevation} every 30s over the course of 2h. We analyze one track through different models, then explore whether the results obtained are appliable to another activity, and in the final part extend the analysis to all the available tracks. We have chosen activity n.38 to initially perform our analysis on, as the track presents a fair amount of variability across our variables of interest, making it very informative. In the first part we conduct a univariate analysis on \texttt{bpm}, namely an HMM and a univariate DLM. we then proceed to look into the static linear relationship between \texttt{bpm} and \texttt{speed} and \texttt{elevation}, and finally we build on the previous models to specify a dynamic regression framework.
+
+# Univariate analysis
+
+We start by plotting the values of \texttt{bpm} for Track n.38 , with the aim of better visualizing their evolution over time. Along the already mentioned variability, we register periods of higher and lower intensity, so that we may reasonably assume that the series is driven by another process. The latter would be latent and unobserved, and would produce a certain degree of "regularity" in the bpm's volatility. 
+
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+tracks_df <- read.delim("tracking_data(1).csv")
+tracking_data <- tracks_df %>%
+  dplyr::select(-s, -track_id_seq)
+
+which_track <- 38
+
+track_long <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  mutate(dfelev = elev - lag(elev)) %>%
+  select(-track_id, -s, -track_id_seq) %>%
+  gather(variable, value, -time)
+
+bpm_38 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  dplyr::select(bpm) %>%
+  as.ts(.)
+
+speed_38 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  dplyr::select(speed) %>%
+  as.ts(.)
+
+dfelev_38 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  mutate(dfelev = elev - lag(elev)) %>%
+  dplyr::select(variable="dfelev") %>%
+  as.ts(.)
+
+elev_38 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  dplyr::select(elev) %>%
+  as.ts(.)
+```
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+tibble(bpm_38, speed_38, elev_38, dfelev_38, time=time(bpm_38))%>%
+ggplot()+
+  geom_line(aes(y=bpm_38, x=time, color="bpm_38"))+
+  geom_line(aes(y=speed_38, x=time, color="speed_38"))+
+  geom_line(aes(y=elev_38, x=time, color="elev_38"))+
+  geom_line(aes(y=dfelev_38, x=time, color="dfelev_38"))+
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Activity 38",
+    caption="Graph 1. Plotting of values for bpm, speed, elevation and difference in elevation   for track n. 38", 
+    y="Values", 
+    x="Observation Time ID")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.position = c(1, 1),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6),
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill="grey98"))
+  
+```
+
+*Hidden Markov Model*
+
+To accomodate for our assumption of a latent state process, we firstly analyze the series through an Hidden Markov Model. We assume the model to be:
+
+1. Homogenous: the transition matrix is time-invariant, and the transition probabilities depend on the history of the states and not of the past values of the observation.
+
+$$
+Pr \left( s_{t+1} = j | \{s_\tau\}_{\tau=1}^t, \{Bpm_\tau\}_{\tau=1}^t \right) = Pr \left( s_{t+1} = j | \{s_\tau\}_{\tau=1}^t \right)
+$$
+
+2. First-order: the estimate of $s_{t+1}$ conditional to $s_t$ is independent of $\{s_\tau\}_{\tau=1}^{t-1}$:
+
+$$
+Pr \left( s_{t+1} = j | \{s_\tau\}_{\tau=1}^t \right) = Pr \left( s_{t+1} = j | s_t \right)
+$$
+
+3.  Irreducible: there are no closed subsets of the transition matrix.
+
+To define the number of states *k*, we proceed by fitting three different models, with 1,3 and 5 latent states respectively, and select the one that minimizes BIC function. The BIC harshly penalizes complexity, as in increased number of states, which we find valuable in specifying a parsimonious model. The model chosen is the one with 3 latent states, with BIC = 1855.126.
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+y_bpm_38 <- as.numeric(bpm_38)
+
+hmm1_38 <- depmix(y_bpm_38 ~ 1, data=data.frame(y_bpm_38), nstates=1 )
+fhmm1_38 <- fit(hmm1_38)
+summary(fhmm1_38)
+print(fhmm1_38)
+
+hmm2_38 <- depmix(y_bpm_38 ~ 1, data=data.frame(y_bpm_38), nstates=3 )
+fhmm2_38 <- fit(hmm2_38)
+summary(fhmm2_38)
+print(fhmm2_38)
+
+hmm3_38 <- depmix(y_bpm_38 ~ 1, data=data.frame(y_bpm_38), nstates=5 )
+fhmm3_38 <- fit(hmm3_38)
+summary(fhmm3_38)
+print(fhmm3_38)
+
+states_mu_sigma <- summary(fhmm2_38)
+estStates_38 <- posterior(fhmm2_38)
+estts <-  estStates_38 %>% 
+  mutate(ts = case_when(
+    state==1 ~ states_mu_sigma[1,1],
+    state==2 ~ states_mu_sigma[2,1],
+    state==3 ~ states_mu_sigma[3,1])) %>% 
+  dplyr::select(ts)
+```
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+tibble(bpm = as.matrix(bpm_38), est = estts$ts, time = time(bpm_38)) %>%
+  ggplot(aes(x=time, y=bpm)) +
+  geom_line(aes(x=time, y=est, color="Estimated States")) +
+  geom_line(aes(x=time, y=bpm, color="Bpm")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=as.matrix(bpm_38)-sd(bpm_38),ymax=as.matrix(bpm_38+sd(bpm_38))),alpha=0.15)+
+  theme_bw() +
+  labs(title="Hidden Markov Model",
+    caption="Graph 2. Representation of the Series as an HMM with 3 States", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+```
+
+The estimated states show a continue movement of the series between the three states, which seems in apparent contradiction with the model. Indeed, the model explains that the changes between states occour only in a few cases, as the highest probability of a state change as indicated by the transition matrix is $p_{2,1}=0.185$. 
+#The graph we observe might be explained by the great number of observations (more than 200)#
+
+*Univariate DLM*
+
+However, before introducing multivariate models we may wonder if the data can be better explained by fitting a continous latent process, rather than the discrete one proposed proper of the HMM. Therefore, we continue by specifying a Dynamic Linear Model and estimating its parameters. 
+The specified model is:
+
+$$Y_t = F_t\theta_t + v_t $$
+
+$$\theta_t = G_t\theta_{t-1} + w_t $$
+
+with $\theta_0 \sim N(m_0,c_0), v_t \overset{i.i.d.}\sim N(0,V), w_t \overset{i.i.d.}\sim N(0,W)$, and intial distribution $\theta_0$, $v_t$ and $w_t$ independent. For simplicity, we also assume $F_t=1$ and $G_t=1$.
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+dlm_38<- function(param){ dlmModPoly(order=1, dV=param[1], dW=param[2], m0=y_bpm_38[1])}
+dlm_38_MLE <- dlmMLE(y_bpm_38, parm = rep(100, 2), dlm_38, lower=c(0.00001, 0), hessian=TRUE) 
+dlm_38_MLE$par #MLE
+sqrt(diag(solve(dlm_38_MLE$hessian))) #SE
+
+mod_dlm_38 <- dlm_38(dlm_38_MLE$par)
+dlm_38_Filt <-dlmFilter(dropFirst(y_bpm_38),mod_dlm_38)
+```
+
+
+```{r}
+#table for MLE and SE
+MLE_ex1 <- data.frame(MLE = dlm_38_MLE$par)
+SE_ex1 <- data.frame(SE = sqrt(diag(solve(dlm_38_MLE$hessian))))
+
+MLE_SE_ex1 <- bind_cols(MLE_ex1,SE_ex1)  
+
+
+MLE_SE_ex1 %>% kable("latex", booktabs = FALSE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+
+We report the MLE for the parameters together with the standar errors. Given that the variance of the observed process is rather small, we expect the previous realization, once accounted for the latent process, would carry substantial information about the likely evolution of process itself. The high signal-to-noise ratio suggests one step-ahaed forecasts that closely mirror the past value of the series. We plot the forecasts below; they are in line with our expecations.
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+tibble(bpm = dropFirst(y_bpm_38), forecast = dlm_38_Filt$f, time = time(dropFirst(bpm_38))) %>%
+  ggplot(aes(x=time, y=bpm)) +
+  geom_line(aes(x=time, y=forecast, color="One-step Ahaed Forecasts")) +
+  geom_line(aes(x=time, y=bpm, color="Bpm")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=as.matrix(dlm_38_Filt$f)-sd(dlm_38_Filt$f), 
+    ymax=as.matrix(dlm_38_Filt$f)+sd(dlm_38_Filt$f)),alpha=0.15) +
+  theme_bw() +
+  labs(title="Dynamic Linear Model",
+    caption="Graph 3. One-step ahaed forecasts for bpm based on a dynamic linear model", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+```
+
+*Comparing the models*
+
+The two models produce consistent results, in that the low probabilities of transition to another state in the HMM are compatible with the high signal-to-noise ratio found in the DLM. In other words, previous observation are very informative about the future values of the series (through information carried by the evolution of the state process, as in both cases the $(Y)_t$ are conditionally indepedent). However, we may wonder which of the two better fits the data. 
+
+The analysis of three different measures of predictive accuracy favors the HMM by a fairly large margin.
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+mape_hmm <-MAPE(estts$ts, y_bpm_38)
+mae_hmm <- MAE(estts$ts, y_bpm_38)
+mse_hmm <- MSE(estts$ts, y_bpm_38)
+
+mape_dlm <- MAPE(dlm_38_Filt$f, dropFirst(y_bpm_38))
+mae_dlm <- MAE(dlm_38_Filt$f, dropFirst(y_bpm_38))
+mse_dlm <- MSE(dlm_38_Filt$f, dropFirst(y_bpm_38))
+```
+
+```{r}
+#table for errors
+hmm_vector <- as.numeric(cbind(mape_hmm, mae_hmm, mse_hmm))
+dlm_vector <- as.numeric(cbind(mape_dlm, mae_dlm, mse_dlm))
+
+hmm_measures <- data.frame(HMM = hmm_vector)
+dlm_measures <- data.frame(DLM = dlm_vector)
+
+labels_table <- data.frame(measure = c("MAPE","MAE","MSE"))
+
+measures_ex1 <- bind_cols(labels_table, hmm_measures,dlm_measures)  
+
+
+measures_ex1 %>% kable("latex", booktabs = FALSE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+We wonder if the results would hold on other tracks too. Thus, we repeat the analysis on track n.62, and evalute the predictive performance of the models. This time, the DLM seems to offer a better fit than the HMM, suggesting that the analysis is not robust across different tracks.
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+tracks_df <- read.delim("tracking_data(1).csv")
+tracking_data <- tracks_df %>%
+  dplyr::select(-s, -track_id_seq)
+
+which_track <- 62
+
+track_long2 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  mutate(dfelev = elev - lag(elev)) %>%
+  select(-track_id, -s, -track_id_seq) %>%
+  gather(variable, value, -time)
+
+bpm_62 <- tracks_df %>%
+  filter(track_id==which_track) %>%
+  dplyr::select(bpm) %>%
+  as.ts(.)
+
+y_bpm_62 <- as.numeric(bpm_62)
+
+hmm2_62 <- depmix(y_bpm_62 ~ 1, data=data.frame(y_bpm_62), nstates=3 )
+fhmm2_62 <- fit(hmm2_62)
+summary(fhmm2_62)
+print(fhmm2_62)
+
+states_mu_sigma <- summary(fhmm2_62)
+estStates_62 <- posterior(fhmm2_62)
+estts_62 <-  estStates_62 %>% 
+  mutate(ts = case_when(
+    state==1 ~ states_mu_sigma[1,1],
+    state==2 ~ states_mu_sigma[2,1],
+    state==3 ~ states_mu_sigma[3,1])) %>% 
+  dplyr::select(ts)
+
+dlm_62<- function(param){ dlmModPoly(order=1, dV=param[1], dW=param[2], m0=y_bpm_62[1])}
+dlm_62_MLE <- dlmMLE(y_bpm_62, parm = rep(100, 2), dlm_62, lower=c(0.00001, 0), hessian=TRUE) 
+dlm_62_MLE$par
+sqrt(diag(solve(dlm_62_MLE$hessian)))
+
+mod_dlm_62 <- dlm_62(dlm_62_MLE$par)
+dlm_62_Filt <-dlmFilter(dropFirst(y_bpm_62),mod_dlm_62)
+
+mape_hmm_62 <-MAPE(estts_62$ts, y_bpm_62)
+mae_hmm_62 <- MAE(estts_62$ts, y_bpm_62)
+mse_hmm_62 <- MSE(estts_62$ts, y_bpm_62)
+
+mape_dlm_62 <- MAPE(dlm_62_Filt$f, dropFirst(y_bpm_62))
+mae_dlm_62 <- MAE(dlm_62_Filt$f, dropFirst(y_bpm_62))
+mse_dlm_62 <- MSE(dlm_62_Filt$f, dropFirst(y_bpm_62))
+```
+
+\bigskip
+
+
+
+
+
+# Linear regression
+
+In this second part, we explore the relationship of \texttt{bpm} with some of its potential determinants. From the initial plot of the track, we idenfity a potential relationship between \texttt{bpm}, \texttt{speed} and elevation's difference (\texttt{dfelev}). We consider the latter instead of the level of elevation, as we intuitively expect it to more directly impact the physical effort exterted during the ride. We also expect \texttt{bpm} to be positevely related to both \texttt{speed} and elevation changes. 
+
+Therefore, we specify a simple linear regression model - regressing \texttt{bpm} on \texttt{speed} and \texttt{dfelev}. We then compute the MLEs of the parameters to check whether our expectations are correct. The MAPE in this case is equal to 0.08053846.
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+x_long <- pull(track_long, "value")
+x1 <- x_long[c(242:480)]
+x2 <- x_long [c(722:960)]
+y <- dropFirst(y_bpm_38)
+mod_lin <- lm(y ~ x1+x2)
+reg_synth <- summary(mod_lin)
+
+mape_R_38 <- MAPE(mod_lin$fitted.values,bpm_38)
+```
+
+
+```{r}
+#table for regression coefficients
+reg_coefficient_ex2 <- as.numeric(reg_synth[["coefficients"]][,1])
+reg_coefficient_ex2 <- data.frame(estimate = reg_coefficient_ex2)
+pvalue_table_ex2 <- data.frame(pvalue = c("***","***","***"))
+labels_table_ex2 <- data.frame(coefficient = c("intercept","speed","dfelev"))
+
+measures_ex2 <- bind_cols(labels_table_ex2, reg_coefficient_ex2, pvalue_table_ex2)  
+
+measures_ex2 %>% kable("latex", booktabs = FALSE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+As expected, the coefficients of our regressors are positive and highly significant, for both \texttt{speed} and \texttt{dfelev}. The two play an active role in determining \texttt{bpm}: as speed and elevation increase, the heart rate of our subject increases. However, notice that elevation's changes influence the heart rate more strongly than speed. The $R^2_a=0.39$ is satisfactory, although not high.
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+tibble(bpm = dropFirst(y_bpm_38), fitted = mod_lin$fitted.values, time = dropFirst(time(bpm_38))) %>%
+  ggplot(aes(x=time, y=bpm)) +
+  geom_line(aes(x=time, y=fitted, color="Fitted Values")) +
+  geom_line(aes(x=time, y=bpm, color="Bpm")) +
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Static Linear Regression",
+    caption="Graph 4. Estimated values of bpm based on a static regression of bpm on speed and elevation changes", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  geom_errorbar(aes(ymin=as.matrix(mod_lin$fitted.values)-sd(mod_lin$fitted.values), ymax=as.matrix(mod_lin$fitted.values)+sd((mod_lin$fitted.values))),alpha=0.15)+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+```
+
+```{r, fig.height=2, fig.width=4, fig.align='center', warning = FALSE, message=FALSE}
+ggqqplot(mod_lin$residuals)+
+  theme_bw() +
+  labs(title="QQ Plot Static Linear Regression",
+       caption="Graph 5. Model checking: empirical residuals vs theoretical")+
+  theme(plot.title = element_text(hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))
+```
+
+When looking at the plotted fitted values, there is a clear discrepancy with the actual data. It may most likely be explained by either the influence of other factors on \texttt{bpm}, or by our assumption of an invariant relationship between the variables over time. Given the data available, we cannot affect the former, however we can explore the possibility of time-dependent coefficients and whether they provide a better fit for the series.
+
+If we leverage the model developed on Track n.38 to estimate the observations in Track n.62, the MAPE increases considerably to almost 14%. Although the value per se is still rather low, it implies an increase in MAPE of 75%, which is an additional clue of the poor transferability of results obtained from one track to others. 
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+x_long2 <- pull(track_long2, "value")
+x1_62 <- x_long2[c(242:480)]
+x2_62 <- x_long2 [c(722:960)]
+y_62 <- dropFirst(y_bpm_62)
+mod_lin_62 <- lm(y_62 ~ x1_62+x2_62)
+lin62_DF <- data.frame(x1_62,x2_62)
+pred_62 <- predict(mod_lin, lin62_DF)
+
+mape_R_62 <- MAPE(pred_62,bpm_62)
+mape_R_62
+```
+
+\bigskip
+
+# HMM as a Dynamic Regression
+
+In this section we introduce a dynamic framework by modelling an HMM as a dynamic regression. We regress, as above, \texttt{bpm} on \texttt{speed} and \texttt{dfelev}, but here the coefficients are allowed to vary discretly over time, depending on an unobservable process. We estimate the following model:
+
+$$\texttt{bpm}_t = \alpha_t + \beta_{1,t} \texttt{speed}_t + \beta_{2,t} \texttt{dfelev}_t + \varepsilon_t \qquad if \quad S_t=j$$
+
+The assumptions on the HMM are mantained as per above. Again, we proceed with different specifications and select the one with 3 states, according to the BIC. Below are the estimates for the parameters, with the respective standard errors.
+
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+hmm1_38_Reg <- depmix(y ~ x1+x2, data=data.frame(y), nstates=1)
+fhmm1_38_Reg <- fit(hmm1_38_Reg)
+summary(fhmm1_38_Reg)
+print(fhmm1_38_Reg)
+
+hmm2_38_Reg <- depmix(y ~ x1+x2, data=data.frame(y), nstates=3)
+fhmm2_38_Reg <- fit(hmm2_38_Reg)
+summary_hmm_ex2 <- summary(fhmm2_38_Reg)
+print(fhmm2_38_Reg)
+
+hmm3_38_Reg <- depmix(y ~ x1+x2, data=data.frame(y), nstates=5)
+fhmm3_38_Reg <- fit(hmm3_38_Reg)
+summary(fhmm3_38_Reg)
+print(fhmm3_38_Reg)
+
+states_mu_sigma_Reg <- summary(fhmm2_38_Reg)
+estStates38_Reg <- posterior(fhmm2_38_Reg)
+estts_Reg <-  estStates38_Reg %>% 
+  mutate(ts = case_when(
+    state==1 ~ (states_mu_sigma_Reg[1,1]+(states_mu_sigma_Reg[1,2]*x1)+(states_mu_sigma_Reg[1,3]*x2)),
+    state==2 ~ (states_mu_sigma_Reg[2,1]+(states_mu_sigma_Reg[2,2]*x1)+(states_mu_sigma_Reg[2,3]*x2)),
+    state==3 ~ (states_mu_sigma_Reg[3,1]+(states_mu_sigma_Reg[3,2]*x1)+(states_mu_sigma_Reg[3,3]*x2)))) %>% 
+  dplyr::select(ts)
+
+mape_hmm_R <- MAPE(estts_Reg$ts, dropFirst(bpm_38))
+mape_hmm_R
+```
+
+```{r}
+#table for hmm,3 states
+tran_matrix1_ex3 <- as.numeric(summary_hmm_ex2[,1])
+tran_matrix1_ex3 <- data.frame(intercept = tran_matrix1_ex3)
+
+tran_matrix2_ex3 <- as.numeric(summary_hmm_ex2[,2])
+tran_matrix2_ex3 <- data.frame(speed = tran_matrix2_ex3)
+
+tran_matrix3_ex3 <- as.numeric(summary_hmm_ex2[,3])
+tran_matrix3_ex3 <- data.frame(dfelev = tran_matrix3_ex3)
+
+labels_state_ex3 <- data.frame(state = c("1","2","3"))
+
+transitions_coefficients_ex3 <- bind_cols(labels_state_ex3, tran_matrix1_ex3, tran_matrix2_ex3, tran_matrix3_ex3)  
+
+transitions_coefficients_ex3 %>% kable("latex", booktabs = FALSE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+The model shows that transition between estimated states are fairly rare, with the highest one being $p_{1,2}=0.129$. Moreover the transitions between state 2 and 3 are very small in probability (less than 3%). Nine out of ten times, ifthe system is in state 3, it would probably remain in state 3 . This shows that the series tend to remain for more than one period in the same state. The parameters are positive and significant in all states, with elevation changes having a stronger correlation with \texttt{bpm} than \texttt{speed}. The overall effect of the transition to a  dynamic framework is not easily disentangable. It leads to more accurate estimates, confirmed by a lower error value measured by the MAPE, now 0.038 against the 0.080 of the static regression, but the values of the betas became less significative and the intercept tends to increase.
+
+```{r, fig.height=6, fig.width=9, fig.align='center', warning = FALSE, message=FALSE}
+gghmm_val <- tibble(bpm = as.matrix(dropFirst(bpm_38)), est = estts_Reg$ts, time = time(dropFirst(bpm_38))) %>%
+  ggplot(aes(x=time, y=bpm)) +
+  geom_line(aes(x=time, y=est, color="State dependent means")) +
+  geom_line(aes(x=time, y=bpm, color="Bpm")) +
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Dynamic Linear Regression",
+       caption="Graph 6. Estimated values of bpm based on a dynamic regression of bpm on speed and elevation changes,
+    with latent process modelled as an HMM with 3 states.", 
+       y="Values", 
+       x="Observation's Time ID",
+       color="Series")+
+  geom_errorbar(aes(ymin=as.matrix(estts_Reg$ts)-sd(estts_Reg$ts),  
+                    ymax=as.matrix(estts_Reg$ts)+sd(estts_Reg$ts)),alpha=0.15)+
+  theme(plot.title = element_text(hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+        legend.position = c(1, 0),
+        legend.margin = margin(6, 6, 6, 6),
+        legend.box.just = "bottom",
+        legend.title=element_text(size=0),
+        legend.text = element_text(size=8),
+        legend.background = element_rect(fill = "grey98"))
+
+gghmm_post <- tibble(post1 = estStates38_Reg$S1,post2 = estStates38_Reg$S2, post3 = estStates38_Reg$S3, time = dropFirst(time(bpm_38))) %>%
+  ggplot(aes(x=time, y=post1)) +
+  geom_line(aes(y=post1, color="State 1")) +
+  geom_line(aes(y=post2, color="State 2"))+
+  geom_line(aes(y=post3, color="State 3"))+
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Posterior Probability of States",
+       caption="Graph 7. Posterior probability of observing a given state at a certain point in time", 
+       y="State Probability", 
+       x="Observation's Time ID",
+       color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+        legend.position = c(1, 0),
+        legend.margin = margin(6, 6, 6, 6),
+        legend.box.just = "bottom",
+        legend.title=element_text(size=0),
+        legend.text = element_text(size=8),
+        legend.background = element_rect(fill = "grey98")) 
+
+ggarrange(gghmm_val, gghmm_post, nrow=2 )
+```
+
+As before, we want to evalute whether our results are transferable to other tracks, and in particular we want to gauge the predictive performance of this dynamic regression on Track n.62. The MAPE of this latter model explodes from the about 3% in the model for Track n.38 to almost 12%, implying a poor fit of the framework across different tracks. 
+
+```{r, include=FALSE, warning = FALSE, message=FALSE}
+hmm2_62_Reg <- depmix(y_62 ~ x1_62+x2_62, data=data.frame(y_62), nstates=3)
+fhmm2_62_Reg <- fit(hmm2_62_Reg)
+summary(fhmm2_62_Reg)
+print(fhmm2_62_Reg)
+
+states_mu_sigma62_Reg <- summary(fhmm2_62_Reg)
+estStates62_Reg <- posterior(fhmm2_62_Reg)
+estts62_Reg <-  estStates62_Reg %>% 
+  mutate(ts = case_when(
+    state==1 ~ (states_mu_sigma62_Reg[1,1]+(states_mu_sigma62_Reg[1,2]*x1)+(states_mu_sigma62_Reg[1,3]*x2)),
+    state==2 ~ (states_mu_sigma62_Reg[2,1]+(states_mu_sigma62_Reg[2,2]*x1)+(states_mu_sigma62_Reg[2,3]*x2)),
+    state==3 ~ (states_mu_sigma62_Reg[3,1]+(states_mu_sigma62_Reg[3,2]*x1)+(states_mu_sigma62_Reg[3,3]*x2)))) %>% 
+  dplyr::select(ts)
+
+mape_hmm62_R <- MAPE(estts62_Reg$ts, dropFirst(bpm_62))
+mape_hmm62_R
+```
+
+
+
+```{r}
+#table for hmm,3 states
+tran_matrix1_ex3b <- as.numeric(states_mu_sigma62_Reg[,1])
+tran_matrix1_ex3b <- data.frame(intercept = tran_matrix1_ex3b)
+
+tran_matrix2_ex3b <- as.numeric(states_mu_sigma62_Reg[,2])
+tran_matrix2_ex3b <- data.frame(speed = tran_matrix2_ex3b)
+
+tran_matrix3_ex3b <- as.numeric(states_mu_sigma62_Reg[,3])
+tran_matrix3_ex3b <- data.frame(dfelev = tran_matrix3_ex3b)
+
+labels_state_ex3b <- data.frame(state = c("1","2","3"))
+
+transitions_coefficients_ex3b <- bind_cols(labels_state_ex3b, tran_matrix1_ex3b, tran_matrix2_ex3b, tran_matrix3_ex3b)  
+
+transitions_coefficients_ex3b %>% kable("latex", booktabs = FALSE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+
+
+# Dynamic linear regression
+
+In this section, we allow the coefficients of the regression to vary over time in a continous way. For this purpose, we use a *Dynamic Linear Regression* embedded in the DLM framework. The model is the following: 
+
+$$\texttt{bpm}_t = \alpha_t + \beta_{1,t}\;\texttt{speed}_t + \beta_{2,t}\;\texttt{dfelev}_t + \varepsilon_t, \qquad \varepsilon_t \overset{i.i.d.}\sim N( 0, \sigma^2 )$$
+
+$$\theta_t = \begin{bmatrix}\alpha_t \\ \beta_{1,t} \\ \beta_{2,t} \end{bmatrix} = \begin{bmatrix}\alpha_{t-1} \\ \beta_{1,t-1} \\ \beta_{2,t-1} \end{bmatrix} + \begin{bmatrix}w_{0,t} \\w_{1,t} \\ w_{2,t} \end{bmatrix}, \qquad w_t \overset{i.i.d.}\sim N_3( 0, \begin{bmatrix} \sigma_{w_0}^2 & 0 & 0 \\ 0 & \sigma_{w_1}^2 & 0 \\ 0 & 0 & \sigma_{w_2}^2 \end{bmatrix} )$$
+
+The state vector is composed of three independent random walks and the errors are assumed to be normally and jointly normally distributed. Moreover, the state vector has initial distribution $\theta_0 \sim N_2(m_0, C_0)$, which is independent of $(\varepsilon_t)$ and $(w_t)$.
+We estimate the model variances via MLE and then use them to derive the smoothed state estimates. From a quick check, it is clear that the MLE is quite unstable in our case. Indeed, taking as an input different initial values for the variances, the loglikelihoods are similar, suggesting a possible identifiability problem. This issue has to be taken into account when analyzing the results of the model. Setting to zero the initial values, we obtain the following estimates for the variances: $V=0.000675524$ and $W=diag(58.78165, 0.01121024, 0)$.The Standard Errors for the MLE are the following:
+
+
+```{r}
+#Dynamic regression
+
+X <- dropFirst(cbind(speed_38, dfelev_38))
+
+build_dynamidlm_38 <- function(param){dlmModReg(X, dV=param[1], dW=param[2:4])}
+
+dynamicdlm_38_MLE <- dlmMLE(bpm_38, c(0,0,0,0),build_dynamidlm_38, lower=c(0.000001,0,0,0), hessian=TRUE)
+
+# SE for MLE
+AsymCov=solve(dynamicdlm_38_MLE$hessian)
+SE_MLE_38 <- sqrt(diag(AsymCov))
+
+#table for SE
+sigma_v <- data.frame(v = SE_MLE_38[1])
+sigma_w0 <- data.frame(w0 = SE_MLE_38[2])
+sigma_w1 <- data.frame(w1 = SE_MLE_38[3])
+sigma_w2 <- data.frame(w2 = SE_MLE_38[4])
+       
+MLE_38_dlm <- bind_cols(sigma_v,sigma_w0, sigma_w1, sigma_w2)  
+
+
+MLE_38_dlm %>% kable("latex", booktabs = TRUE) %>% 
+   kable_styling(latex_options = c("striped", "hold_position"), 
+                 position = "center")
+```
+
+We now plot the series of smoothed state estimates for $(\alpha_t)$ and $(\beta_{1,t})$, i.e. the values of the intercepts and the \texttt{speed}_t coefficients, together with their 95% credible intervals. We omit the graph for \texttt{dfelev}_t, as it would not add many useful information, being it constant over time. Indeed, $\beta_{2,t}$ takes value -0.203247 in all periods and its 95% credible interval is $[-0.4173645;0.01087056]$.
+
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+#Smoothing estimates
+mod_dynamicdlm_38 <- build_dynamidlm_38(dynamicdlm_38_MLE$par)
+
+dynamicdlm_38_smooth <- dlmSmooth(bpm_38, mod_dynamicdlm_38)
+
+#extract the ts
+alpha_est <- dropFirst(dynamicdlm_38_smooth$s[,1])
+beta1_est <- dropFirst(dynamicdlm_38_smooth$s[,2])
+beta2_est <- dropFirst(dynamicdlm_38_smooth$s[,3])
+
+#extract std and dataframe for alpha 
+DT <- dlmSvd2var(dynamicdlm_38_smooth$U.S,dynamicdlm_38_smooth$D.S)
+StdDev <- c()
+for (n in seq(2, length(DT))){
+  StdDev <- append (StdDev,unlist(DT[n])[1])
+}
+data_DF_alpha <- data.frame(time=as.numeric(time(StdDev)), 
+                      est1=as.numeric(alpha_est), 
+                      std1=as.numeric(sqrt(StdDev)))
+
+#extract std and dataframe for beta1 
+DT <- dlmSvd2var(dynamicdlm_38_smooth$U.S,dynamicdlm_38_smooth$D.S)
+StdDev <- c()
+for (n in seq(2, length(DT))){
+  StdDev <- append (StdDev,unlist(DT[n])[5])
+}
+data_DF_beta1 <- data.frame(time=as.numeric(time(StdDev)), 
+                      est2=as.numeric(beta1_est), 
+                      std2=as.numeric(sqrt(StdDev)))
+
+#ggplot for alpha
+alpha <- ggplot(data_DF_alpha, aes(x=time, y=est1)) +
+  geom_line(aes(x=time, y=est1, color="alpha")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=est1-qnorm(0.95)*std1,ymax=est1+qnorm(0.95)*std1),alpha=0.15)+
+  theme_bw() +
+  labs(title="Estimates for alpha",
+    caption="Graph 8.Estimates of alpha with 95% C.I.", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+#ggplot for beta1
+beta1 <- ggplot(data_DF_beta1, aes(x=time, y=est2)) +
+  geom_line(aes(x=time, y=est2, color="beta1")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=est2-qnorm(0.95)*std2,ymax=est2+qnorm(0.95)*std2),alpha=0.15)+
+  theme_bw() +
+  labs(title="Estimates for beta1",
+    caption="Graph 9. Estimates of beta1 with 95% C.I.", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+
+grid.arrange(alpha, beta1, layout_matrix = matrix(c(1,2), nrow = 1))
+```
+
+
+The values for the beta coefficients decrease as we allow for gradually more variability over time. Indeed, if the coefficients are allowed to vary freely most of the variability of \texttt{bpm} is captured by the intercept. It follows that the positive coefficients we found in the model, suggesting a strong casual effect, may be influence by omitted variables. That is, it is possible there exists an underlying process positively correlated with \texttt{speed} and \texttt{dfelev}. 
+
+This is particularly clear for \texttt{dfelev}, whose coefficient in the static regression takes value 2.53, while in the dynamic one goes down to -0.2032. The implications are two-fold. On the one hand, being the coefficient constant over time, the length of an uphill or a downhill does not affect the change in \texttt{bpm}. This means, for example, that the prolonged physical fatigue due to a long uphill and a short one has the same effect on \texttt{bpm}. Thus, the model suggests that the magnitude of the changes in the elevation does not influence the changes in the heart rate. At first sight, these results seem counterintuitive. Moreover, the smoothing estimate for this factor is negative (and most of the credible interval is below zero), implying that a downhill increases the heart rate. Again, this further result is quite unreasonable for a bike ride, particularly considering that in the second half of the track the elevation is constantly decreasing.
+
+We observe that the coefficient for \texttt{speed} decreases throghout the models computed. In this last framework, $\beta_{2,t}$ is highly variable and takes over time both positive and negatives values. We explain these changes through two channels. The influence of \texttt{speed} on \texttt{bpm} is influenced by the changes in elevation: during a downhill the speed will likely increase but the effort for doing so does not increase \texttt{bpm}. Secondly, the influence of speed on bpm could be influenced by external factors, like the condition of the ground or the weather.
+
+Overall, we note that the explanatory power of our variables strongly decreases in the Dynamic Regression. Indeed, the increase in the intercept means that the latter captures more of the variability in the heart rate and, thus, the supposed causal relationship of \texttt{speed} and \texttt{dfelev} on \texttt{bpm} is highly reduced. The intercept could be regarded as the influence of time on \texttt{bpm}. In fact, as the time goes by, our rider would likely feel fatigue, which drives the heart rate up.
+
+The conclusions are the following. The MLE is quite unstable, making our results uncertain. The coefficient for \texttt{speed} is highly variable and for this reason it is not possible to give undisputable conclusions. This is confirmed by the coefficient for \texttt{dfelev} which, being constant, seems unreasonable.
+
+
+
+# Comparison across tracks
+
+```{r, fig.height=4, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+#Dynamic regression for track 62
+
+bpm_62 <- tracks_df %>%
+  filter(track_id==62) %>%
+  dplyr::select(bpm) %>%
+  as.ts(.)
+
+speed_62 <- tracks_df %>%
+  filter(track_id==62) %>%
+  dplyr::select(speed) %>%
+  as.ts(.)
+
+dfelev_62 <- tracks_df %>%
+  filter(track_id==62) %>%
+  mutate(dfelev = elev - lag(elev)) %>%
+  dplyr::select(variable="dfelev") %>%
+  as.ts(.)
+
+X2 <- dropFirst(cbind(speed_62, dfelev_62))
+
+build_dynamidlm_62 <- function(param){dlmModReg(X2, dV=param[1], dW=param[2:4])}
+
+dynamicdlm_62_MLE <- dlmMLE(bpm_62, c(0,0,0,0),build_dynamidlm_62, lower=c(0.000001,0,0,0), hessian=TRUE)
+
+#Smoothing estimates for track 62
+mod_dynamicdlm_62 <- build_dynamidlm_62(dynamicdlm_62_MLE$par)
+
+dynamicdlm_62_smooth <- dlmSmooth(bpm_62, mod_dynamicdlm_62)
+
+#extract the ts
+alpha62_est <- dropFirst(dynamicdlm_62_smooth$s[,1])
+beta162_est <- dropFirst(dynamicdlm_62_smooth$s[,2])
+beta262_est <- dropFirst(dynamicdlm_62_smooth$s[,3])
+
+#extract std and dataframe for alpha (track 62)
+DT <- dlmSvd2var(dynamicdlm_62_smooth$U.S,dynamicdlm_62_smooth$D.S)
+StdDev62 <- c()
+for (n in seq(2, length(DT))){
+  StdDev62 <- append (StdDev62,unlist(DT[n])[1])
+}
+data_DF_alpha62 <- data.frame(time=as.numeric(time(StdDev62)), 
+                      est162=as.numeric(alpha62_est), 
+                      std162=as.numeric(sqrt(StdDev62)))
+
+#extract std and dataframe for beta1 (track 62)
+DT <- dlmSvd2var(dynamicdlm_62_smooth$U.S,dynamicdlm_62_smooth$D.S)
+StdDev62 <- c()
+for (n in seq(2, length(DT))){
+  StdDev62 <- append (StdDev62,unlist(DT[n])[5])
+}
+data_DF_beta162 <- data.frame(time=as.numeric(time(StdDev62)), 
+                      est262=as.numeric(beta162_est), 
+                      std262=as.numeric(sqrt(StdDev62)))
+
+#ggplot for alpha
+alpha <- ggplot(data_DF_alpha62, aes(x=time, y=est162)) +
+  geom_line(aes(x=time, y=est162, color="alpha")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=est162-qnorm(0.95)*std162,ymax=est162+qnorm(0.95)*std162),alpha=0.15)+
+  theme_bw() +
+  labs(title="Estimates for alpha",
+    caption="Graph 10. Estimates for alpha with 95% C.I., track 62", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+#ggplot for beta1
+beta1 <- ggplot(data_DF_beta162, aes(x=time, y=est262)) +
+  geom_line(aes(x=time, y=est262, color="beta1")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=est262-qnorm(0.95)*std262,ymax=est262+qnorm(0.95)*std262),alpha=0.15)+
+  theme_bw() +
+  labs(title="Estimates for beta1, 95% C.I.",
+    caption="Graph 11. Estimates for beta1 with 95% C.I., track 62", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+
+
+
+
+#extract std and dataframe for beta1 (track 62)
+DT <- dlmSvd2var(dynamicdlm_62_smooth$U.S,dynamicdlm_62_smooth$D.S)
+StdDev62 <- c()
+for (n in seq(2, length(DT))){
+  StdDev62 <- append (StdDev62,unlist(DT[n])[9])
+}
+data_DF_beta262 <- data.frame(time=as.numeric(time(StdDev62)), 
+                      est362=as.numeric(beta262_est), 
+                      std362=as.numeric(sqrt(StdDev62)))
+
+#ggplot for alpha
+gamma <- ggplot(data_DF_beta262, aes(x=time, y=est362)) +
+  geom_line(aes(x=time, y=est362, color="alpha")) +
+  scale_color_aaas() +
+  geom_errorbar(aes(ymin=est362-qnorm(0.95)*std362,ymax=est362+qnorm(0.95)*std362),alpha=0.15)+
+  theme_bw() +
+  labs(title="Estimates for alpha, track 62",
+    caption="Graph 12.Estimates for alpha with 95% C.I.", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = c(1, 0),
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+
+
+grid.arrange(alpha, beta1, layout_matrix = matrix(c(1,2), nrow = 1))
+```
+
+
+If we replicate our analysis on Track 62, the results suggest the same conclusions. We wonder if these results hold also for all the other tracks. In other words, we want to avoid any possible misdirection due to the partiality of the analysis. Therefore, we estimate the coefficients for all the tracks applying the Dynamic regression through a cycle and plot, respectively, $\beta_{1,t}$ and $\beta_{2,t}$ for all the tracks.
+
+We find that based on these further results, our previous conclusions are confirmed. The coefficient for \texttt{dfelev} is for the majority of the tracks constant or with low variance. The values are generally near to zero, suggesting a low impact of \texttt{dfelev} on \texttt{bpm}. The coefficients for \texttt{speed} instead  take positive and negative values, depending on the track. This does not allow us to uniquely define the relationship between \texttt{speed} and \texttt{bpm}. Moreover, in some cases they result to be constant while in other cases they vary.
+
+
+
+```{r}
+tracks_df <- read.delim("tracking_data(1).csv")
+
+#create the matrices
+alpha_matrix <- matrix(1:10800, nrow=240)
+beta1_matrix <- matrix(1:10800, nrow=240)
+beta2_matrix <- matrix(1:10800, nrow=240)
+
+#cycle which applies dynamic regression to all tracks
+for (i in 1:45){
+
+  which_track <- i
+
+  #extract the data for each variable  
+  bpm_which <- tracks_df %>%
+    filter(track_id_seq==which_track) %>%
+    dplyr::select(bpm) %>%
+    as.ts(.)
+
+  speed_which <- tracks_df %>%
+    filter(track_id_seq==which_track) %>%
+    dplyr::select(speed) %>%
+    as.ts(.)
+
+  dfelev_which <- tracks_df %>%
+    filter(track_id_seq==which_track) %>%
+    mutate(dfelev = elev - lag(elev)) %>%
+    dplyr::select(variable="dfelev") %>%
+    as.ts(.)
+  
+  #estimate DLM through MLE
+  regressors<- dropFirst(cbind(speed_which, dfelev_which))
+
+  buildDynamicwhich<- function(param){dlmModReg(regressors, dV=param[1], dW=param[2:4])}
+
+  outMLEwhich<- dlmMLE(bpm_which, c(0,0,0,0),buildDynamicwhich, lower=c(0.000001,0,0,0), hessian=TRUE)
+  
+  mod_which <- buildDynamicwhich(outMLEwhich$par)
+
+  outSmoothwhich=dlmSmooth(bpm_which, mod_which)
+
+  #store the time series in a column of the matrices
+  alpha_matrix[,i] <- dropFirst(outSmoothwhich$s[,1])
+  beta1_matrix[,i] <- dropFirst(outSmoothwhich$s[,2])
+  beta2_matrix[,i] <- dropFirst(outSmoothwhich$s[,3])
+}
+```
+
+```{r, fig.height=6, fig.width=8, fig.align='center', warning = FALSE, message=FALSE}
+#ggplot
+
+time <- data.frame(time = as.numeric(time(beta2_matrix[,1])))
+
+dataAlpha <- as.data.frame(alpha_matrix) 
+database_Alpha <- bind_cols(time, dataAlpha) %>% gather(variable, value, -time)
+
+dataBeta1 <- as.data.frame(beta1_matrix) 
+database_Beta1 <- bind_cols(time, dataBeta1) %>% gather(variable, value, -time)
+
+dataBeta2 <- as.data.frame(beta2_matrix) 
+database_Beta2 <- bind_cols(time, dataBeta2) %>% gather(variable, value, -time)
+
+
+plot_alpha <- ggplot(database_Alpha, aes(x=time, y=value, group=variable, color=variable)) +
+    geom_line() +
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Estimates for alpha, all tracks",
+    caption="Graph 13. Estimates for alpha with 95% C.I. for all tracks", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = "none",
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+plot_beta1 <- ggplot(database_Beta1, aes(x=time, y=value, group=variable, color=variable)) +
+    geom_line() +
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Estimates for Beta1, all tracks",
+    caption="Graph 12. Estimates for beta1 for all tracks", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = "none",
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+plot_beta2 <- ggplot(database_Beta2, aes(x=time, y=value, group=variable, color=variable)) +
+    geom_line() +
+  scale_color_aaas() +
+  theme_bw() +
+  labs(title="Estimates for beta2, all tracks",
+    caption="Graph 13. Estimates for beta2 for all tracks ", 
+    y="Values", 
+    x="Observation's Time ID",
+    color="Series")+
+  theme(plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(hjust = 0.5))+
+  theme(legend.justification = c("right","bottom"),
+    legend.position = "none",
+    legend.margin = margin(6, 6, 6, 6),
+    legend.box.just = "bottom",
+    legend.title=element_text(size=0),
+    legend.text = element_text(size=8),
+    legend.background = element_rect(fill = "grey98"))
+
+grid.arrange(plot_beta1, plot_beta2, layout_matrix = matrix(c(1,2), ncol = 1))
+```
+
+# Conclusions
+
+We conducted the analysis on the bike rides in the dataset aiming to better understand the relationship between \texttt{bpm}, \texttt{speed} and \texttt{dfelev}. When considering a multivariate approach we firstly found a positive influence of \texttt{speed} and \texttt{dfelev} on \texttt{bpm} in the constant case. The more we allowed the coefficients to vary over time, the more the explanatory power of the variables decreased. This results are true also for the majority of the tracks, allowing us to conclude that forecasting the \texttt{bpm} base on \texttt{speed} and \texttt{dfelev} will likely give back unstable results. Probably the model should be better specified, as it could be supposed we experience an Omitted Variable Bias (like for example the coeffient for the fatigue).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
