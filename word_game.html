@@ -1,0 +1,651 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Word Chain Game</title>
+    <link href="https://fonts.googleapis.com/css2?family=Monoton&family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+            font-family: 'Poppins', sans-serif;
+        }
+        .selected {
+            border-color: #ff6b6b !important;
+            box-shadow: 0 0 10px rgba(255, 107, 107, 0.3);
+        }
+        @keyframes celebrate {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        
+        @keyframes float-score {
+            0% { 
+                transform: translateY(0);
+                opacity: 1;
+            }
+            100% { 
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+        }
+        
+        .celebrate {
+            animation: celebrate 0.5s ease;
+            box-shadow: 0 0 15px rgba(74, 144, 226, 0.5);
+            border-color: #4a90e2 !important;
+        }
+        
+        .float-score {
+            position: absolute;
+            color: #4a90e2;
+            font-family: 'Poppins', sans-serif;
+            font-weight: 600;
+            font-size: 24px;
+            pointer-events: none;
+            animation: float-score 1s ease-out forwards;
+        }
+        
+        .add-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            border-radius: 50%;
+            color: white;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transform: translateY(-25px);
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .letter-box {
+            position: relative;
+            width: 60px;
+            height: 60px;
+            border: 2px solid #d3d6da;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            font-family: 'Poppins', sans-serif;
+            font-weight: 600;
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .letter-box:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 2px 8px rgba(74, 144, 226, 0.2);
+        }
+
+        .letter-box.selected {
+            border-color: #4a90e2;
+            box-shadow: 0 0 10px rgba(74, 144, 226, 0.3);
+        }
+
+        .insertion-point {
+            width: 2px;
+            height: 40px;
+            background: transparent;
+            margin: 0 -1px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .insertion-point::after {
+            content: '';
+            position: absolute;
+            top: -15px;
+            bottom: -15px;
+            left: -12px;
+            right: -12px;
+            cursor: pointer;
+        }
+
+        .insertion-point:hover {
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            width: 4px;
+            margin: 0 5px;
+            transform: scaleY(1.2);
+        }
+
+        .insertion-point:hover::before {
+            content: '+';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #4a90e2;
+            font-size: 20px;
+            font-weight: bold;
+            opacity: 0.8;
+            pointer-events: none;
+            z-index: 2; 
+            background: white;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            box-shadow: 0 0 5px rgba(255, 255, 255, 0.8);
+        }
+
+        .context-menu {
+            position: absolute;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 8px 0;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            color: #4a4a4a;
+            font-family: 'Poppins', sans-serif;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .context-menu-item:hover {
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            color: white;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div style="background-color: white; padding: 20px; min-width: 370px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <h1 style="
+            font-family: 'Monoton', cursive !important;
+            font-size: 48px;
+            font-weight: 300;
+            text-align: center;
+            background: linear-gradient(45deg, #FF0080, #FF0000, #FF8C00, #FFD700);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            opacity: 0.9;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+            white-space: nowrap;
+            margin-bottom: 15px;">Word Game</h1>
+            
+        <div style="
+            text-align: center;
+            font-family: 'Poppins', sans-serif;
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;">
+            <span style="
+                background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;
+                padding: 0 5px;
+                transition: all 0.3s ease;">Add</span>
+            <span style="
+                color: #d3d6da;
+                font-size: 20px;
+                line-height: 1;
+                transform: translateY(-2px);">•</span>
+            <span style="
+                background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;
+                padding: 0 5px;
+                transition: all 0.3s ease;">Edit</span>
+            <span style="
+                color: #d3d6da;
+                font-size: 20px;
+                line-height: 1;
+                transform: translateY(-2px);">•</span>
+            <span style="
+                background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;
+                padding: 0 5px;
+                transition: all 0.3s ease;">Drop</span>
+        </div>
+
+        <div id="word-container" style="
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;"></div>
+
+        <p style="
+            text-align: center;
+            margin-bottom: 30px;
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            font-weight: 500;">Length of the chain: 0</p>
+        <div id="message" style="
+            text-align: center;
+            height: 20px;
+            margin-bottom: 20px;
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            font-weight: 500;"></div>
+        
+        <div style="
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            font-family: 'Poppins', sans-serif;
+            font-size: 14px;
+            line-height: 1.6;">
+            <span style="
+                background: linear-gradient(45deg, #4a90e2, #ff6b6b);
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;">
+                Add, Edit, or Drop one letter at a time to form a new word.<br>
+                The one who has the longest chain wins!
+            </span>
+        </div>
+    </div>
+
+    <script>
+        let selectedBox = null;
+        let selectedInsertionIndex = null;
+        let contextMenu = null;
+        let currentWord = ['H', 'O', 'U', 'S', 'E'];
+        let chainLength = 0;
+        let discoveredWords = new Set(['HOUSE']);
+
+        // Word validation function
+        async function isValidWord(word) {
+            try {
+                const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
+                if (!response.ok) return false;
+                
+                // Get the full dictionary response
+                const data = await response.json();
+                
+                // Check if it's a proper word by looking for meanings
+                if (!data[0] || !data[0].meanings) return false;
+                
+                // Check each meaning to ensure it's not just an acronym
+                for (const meaning of data[0].meanings) {
+                    // Skip if it's marked as an acronym/abbreviation
+                    if (meaning.definitions.some(def => 
+                        def.definition.toLowerCase().includes('acronym') ||
+                        def.definition.toLowerCase().includes('abbreviation'))) {
+                        continue;
+                    }
+                    
+                    // If we find at least one non-acronym definition, it's a valid word
+                    return true;
+                }
+                
+                // If we only found acronym definitions, reject the word
+                showMessage('Acronyms are not allowed!');
+                return false;
+                
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function updateChainLength(increment) {
+            chainLength += increment;
+            const counter = document.querySelector('p');
+            counter.textContent = `Length of the chain: ${chainLength}`;
+            counter.style.transform = 'scale(1.2)';
+            setTimeout(() => counter.style.transform = 'scale(1)', 200);
+        }
+
+        function showMessage(text, duration = 2000) {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = text;
+            messageEl.style.opacity = '0';
+            messageEl.style.background = 'linear-gradient(45deg, #4a90e2, #ff6b6b)';
+            messageEl.style.webkitBackgroundClip = 'text';
+            messageEl.style.backgroundClip = 'text';
+            messageEl.style.color = 'transparent';
+            messageEl.style.fontWeight = '500';
+            
+            setTimeout(() => {
+                messageEl.style.opacity = '1';
+            }, 50);
+            
+            setTimeout(() => {
+                messageEl.style.opacity = '0';
+                setTimeout(() => {
+                    messageEl.textContent = '';
+                    messageEl.style.opacity = '1';
+                }, 300);
+            }, duration);
+        }
+
+        function shakeBoxes() {
+            const boxes = document.querySelectorAll('.letter-box');
+            boxes.forEach(box => {
+                box.style.backgroundColor = '#ffebee';
+                box.style.transform = 'translateX(-3px)';
+                setTimeout(() => {
+                    box.style.transform = 'translateX(3px)';
+                    setTimeout(() => {
+                        box.style.transform = 'translateX(-2px)';
+                        setTimeout(() => {
+                            box.style.transform = 'translateX(2px)';
+                            setTimeout(() => {
+                                box.style.transform = '';
+                                box.style.backgroundColor = '';
+                            }, 100);
+                        }, 100);
+                    }, 100);
+                }, 100);
+            });
+        }
+
+        function celebrateWord() {
+            const boxes = document.querySelectorAll('.letter-box');
+            boxes.forEach((box, index) => {
+                setTimeout(() => {
+                    box.classList.add('celebrate');
+                    setTimeout(() => box.classList.remove('celebrate'), 500);
+                }, index * 100);
+            });
+
+            const container = document.getElementById('word-container');
+            const floatScore = document.createElement('div');
+            floatScore.className = 'float-score';
+            floatScore.textContent = '+1';
+            floatScore.style.left = `${container.offsetLeft + container.offsetWidth/2 - 15}px`;
+            floatScore.style.top = `${container.offsetTop + container.offsetHeight/2}px`;
+            document.body.appendChild(floatScore);
+            
+            setTimeout(() => floatScore.remove(), 1000);
+        }
+
+        async function addLetter(index, newLetter) {
+            const oldWord = [...currentWord];
+            const container = document.getElementById('word-container');
+            
+            // Create and insert the new box immediately
+            const newBox = document.createElement('div');
+            newBox.className = 'letter-box';
+            
+            const span = document.createElement('span');
+            span.className = 'letter';
+            span.textContent = newLetter;
+            newBox.appendChild(span);
+            
+            // Start with scale animation
+            newBox.style.transform = 'scale(0)';
+            newBox.style.opacity = '0';
+            
+            // Insert at correct position
+            const boxes = Array.from(document.querySelectorAll('.letter-box'));
+            if (index >= boxes.length) {
+                container.appendChild(newBox);
+            } else {
+                container.insertBefore(newBox, boxes[index]);
+            }
+            
+            // Animate in
+            setTimeout(() => {
+                newBox.style.transform = 'scale(1)';
+                newBox.style.opacity = '1';
+            }, 50);
+            
+            // Update word and check validity
+            currentWord.splice(index, 0, newLetter);
+            const word = currentWord.join('');
+            const isValid = await isValidWord(word.toLowerCase());
+            
+            if (isValid && !discoveredWords.has(word)) {
+                updateChainLength(1);
+                discoveredWords.add(word);
+                createWordContainer();
+                celebrateWord();
+                return true;
+            } else {
+                if (isValid) {
+                    showMessage('Word already discovered!');
+                } else {
+                    showMessage('Not a valid word!');
+                }
+                
+                // Animate out and revert
+                newBox.style.transform = 'scale(0)';
+                newBox.style.opacity = '0';
+                
+                setTimeout(() => {
+                    currentWord = oldWord;
+                    createWordContainer();
+                    shakeBoxes();
+                }, 300);
+                return false;
+            }
+        }
+
+        async function dropLetter(index) {
+            const oldWord = [...currentWord];
+            const boxes = document.querySelectorAll('.letter-box');
+            const box = boxes[index];
+            
+            // Animate the removal immediately
+            box.style.transform = 'scale(0)';
+            box.style.opacity = '0';
+            
+            // Update word and check validity
+            currentWord.splice(index, 1);
+            const word = currentWord.join('');
+            
+            if (word.length >= 3) {
+                const isValid = await isValidWord(word.toLowerCase());
+                if (isValid && !discoveredWords.has(word)) {
+                    setTimeout(() => {
+                        box.remove();
+                        createWordContainer();
+                    }, 300);
+                    updateChainLength(1);
+                    discoveredWords.add(word);
+                    celebrateWord();
+                    return true;
+                } else {
+                    if (isValid) {
+                        showMessage('Word already discovered!');
+                    } else {
+                        showMessage('Not a valid word!');
+                    }
+                }
+            } else {
+                showMessage('Word must be at least 3 letters long!');
+            }
+            
+            // If invalid, animate the letter back and clear selection
+            currentWord = oldWord;
+            setTimeout(() => {
+                box.style.transform = 'scale(1)';
+                box.style.opacity = '1';
+                box.classList.remove('selected');  // Remove selected class
+                selectedBox = null;  // Clear selected box reference
+                shakeBoxes();
+            }, 300);
+            return false;
+        }
+
+        function selectBox(box, index) {
+            if (selectedBox) {
+                selectedBox.classList.remove('selected');
+            }
+            selectedBox = box;
+            box.classList.add('selected');
+            showMessage('Type a letter to change it', 2000);
+        }
+
+        function selectInsertionPoint(point, index) {
+            if (selectedBox) {
+                selectedBox.classList.remove('selected');
+                selectedBox = null;
+            }
+            
+            document.querySelectorAll('.insertion-point').forEach(p => {
+                p.classList.remove('selected');
+            });
+            
+            point.classList.add('selected');
+            selectedInsertionIndex = index;
+            showMessage('Type a letter to add it here', 2000);
+        }
+
+        function createWordContainer() {
+            const container = document.getElementById('word-container');
+            container.innerHTML = '';
+            
+            // Add first insertion point
+            addInsertionPoint(container, 0);
+            
+            currentWord.forEach((letter, index) => {
+                const letterBox = document.createElement('div');
+                letterBox.className = 'letter-box';
+                letterBox.onclick = () => selectBox(letterBox, index);
+                letterBox.oncontextmenu = (e) => showContextMenu(e, index);
+                
+                const span = document.createElement('span');
+                span.className = 'letter';
+                span.textContent = letter;
+                letterBox.appendChild(span);
+                container.appendChild(letterBox);
+                
+                addInsertionPoint(container, index + 1);
+            });
+        }
+
+        function addInsertionPoint(container, index) {
+            const point = document.createElement('div');
+            point.className = 'insertion-point';
+            point.onclick = () => selectInsertionPoint(point, index);
+            container.appendChild(point);
+        }
+
+        // Event Listeners
+        document.addEventListener('keydown', async function(event) {
+            if (event.key === 'Backspace' || event.key === 'Delete') {
+                if (selectedBox) {
+                    const index = Array.from(document.querySelectorAll('.letter-box')).indexOf(selectedBox);
+                    await dropLetter(index);
+                    selectedBox = null;
+                }
+                return;
+            }
+
+            if (!event.key.match(/^[a-zA-Z]$/)) return;
+
+            const newLetter = event.key.toUpperCase();
+            
+            if (selectedInsertionIndex !== null) {
+                await addLetter(selectedInsertionIndex, newLetter);
+                selectedInsertionIndex = null;
+                document.querySelectorAll('.insertion-point').forEach(p => {
+                    p.classList.remove('selected');
+                });
+            } else if (selectedBox) {
+                const index = Array.from(document.querySelectorAll('.letter-box')).indexOf(selectedBox);
+                const oldLetter = currentWord[index];
+                currentWord[index] = newLetter;
+                
+                const word = currentWord.join('');
+                const isValid = await isValidWord(word.toLowerCase());
+                
+                if (isValid && !discoveredWords.has(word)) {
+                    updateChainLength(1);
+                    discoveredWords.add(word);
+                    createWordContainer();
+                    celebrateWord();
+                } else {
+                    if (isValid) {
+                        showMessage('Word already discovered!');
+                    }
+                    currentWord[index] = oldLetter;
+                    createWordContainer();
+                    shakeBoxes();
+                }
+                selectedBox = null;
+            }
+        });
+
+        // Initialize
+        createWordContainer();
+        showMessage('Click to edit, hover between for +, right-click to delete', 4000);
+
+        // Also update the right-click context menu handler
+        function showContextMenu(event, index) {
+            event.preventDefault();
+            
+            if (contextMenu) {
+                document.body.removeChild(contextMenu);
+            }
+            
+            contextMenu = document.createElement('div');
+            contextMenu.className = 'context-menu';
+            contextMenu.innerHTML = `
+                <div class="context-menu-item" onclick="handleDelete(${index})">
+                    <span>🗑️ Delete letter</span>
+                </div>
+            `;
+            
+            contextMenu.style.left = `${event.pageX}px`;
+            contextMenu.style.top = `${event.pageY}px`;
+            
+            document.body.appendChild(contextMenu);
+            
+            setTimeout(() => {
+                document.addEventListener('click', closeContextMenu);
+            }, 0);
+        }
+
+        async function handleDelete(index) {
+            closeContextMenu();
+            const result = await dropLetter(index);
+            if (!result) {
+                // Clear any remaining selection if drop failed
+                selectedBox = null;
+                document.querySelectorAll('.letter-box').forEach(box => {
+                    box.classList.remove('selected');
+                });
+            }
+        }
+    </script>
+</body>
+</html>
